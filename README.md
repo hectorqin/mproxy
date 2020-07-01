@@ -17,10 +17,14 @@ make clean && make
 ```bash
 $ ./mproxy -h
 Usage:
-        -h : Print usage
-        -p <port number> : Specifyed local listen port
-        -u <user:pass> : Specifyed basic authorization of proxy
+        -p <port number> : Specifyed local listen port.
+        -a <user:pass> : Specifyed basic authorization of proxy.
         -r <remote_host:remote_port> : Specifyed remote host and port of reverse proxy. Only support http service now.
+        -f <remote_host:remote_port> : Specifyed remote host and port of upstream proxy.
+        -A <user:pass> : Specifyed basic authorization of upstream proxy.
+        -E : Encode data when forwarding data. Available in forwarding upstream proxy.
+        -D : Decode data when receiving data. Available in forwarding upstream proxy.
+        -h : Print usage.
 ```
 
 ## Start a http forward proxy server
@@ -40,7 +44,35 @@ Usage:
 ### Proxy basic authentication
 
 ```bash
-./mproxy -u "www:123456"
+./mproxy -a "www:123456"
+```
+
+### Upstream proxy
+
+```bash
+./mproxy -f "127.0.0.1:8999"
+```
+
+### Upstream proxy with upstream proxy basic authentication
+
+```bash
+./mproxy -f "127.0.0.1:8999" -A "www:123456"
+```
+
+### Upstream proxy with upstream proxy basic authentication and Proxy basic authentication
+
+```bash
+./mproxy -f "127.0.0.1:8999" -A "www:123456" -a "www:12345678"
+```
+
+### Upstream proxy with simple data encryption
+
+```bash
+# upstream proxy
+./mproxy -D -p 8999
+
+# proxy
+./mproxy -f "127.0.0.1:8999" -A "www:123456" -a "www:12345678" -E
 ```
 
 ## Start a http reverse proxy server
@@ -51,8 +83,8 @@ Usage:
 ./mproxy -p 8999 -r "www.baidu.com:80"
 ```
 
-### With proxy basic authentication
+### With www basic authentication
 
 ```bash
-./mproxy -u "www:123456" -r "www.baidu.com:80"
+./mproxy -a "www:123456" -r "www.baidu.com:80"
 ```

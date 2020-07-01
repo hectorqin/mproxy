@@ -13,6 +13,10 @@
 #include <netinet/in.h>
 #include <string.h>
 
+// #define DEBUG 1
+
+// #define ENCRYPTION_DEBUG 0
+
 #define BUF_SIZE 8192
 
 #define DEFAULT_LOCAL_PORT    8080
@@ -25,15 +29,17 @@
 
 #define MAX_HEADER_VALUE_SIZE 2048
 
+#define MAX_AUTH_STRING_SIZE 128
+
 #define LOG(fmt...)  do {fprintf(stderr, ##fmt);} while(0)
 
-#define SSL_CONNECTION_RESPONSE "HTTP/1.0 200 Connection established"
+#define SSL_CONNECTION_RESPONSE "HTTP/1.0 200 Connection established\r\n\r\n"
 
-#define PROXY_AUTHENTICATION_REQUIRED_RESPONSE "HTTP/1.0 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"\""
+#define PROXY_AUTHENTICATION_REQUIRED_RESPONSE "HTTP/1.0 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"\"\r\n\r\n"
 
-#define PROXY_UNAUTHORIZED_RESPONSE "HTTP/1.0 401 Unauthorized"
+#define PROXY_UNAUTHORIZED_RESPONSE "HTTP/1.0 401 Unauthorized\r\n\r\n"
 
-#define WWW_UNAUTHORIZED_RESPONSE "HTTP/1.0 401 Unauthorized\r\nWww-Authenticate: Basic realm=\"Restricted\""
+#define WWW_UNAUTHORIZED_RESPONSE "HTTP/1.0 401 Unauthorized\r\nWww-Authenticate: Basic realm=\"Restricted\"\r\n\r\n"
 
 /**
  *
@@ -88,6 +94,8 @@ void base64enc(char *dst, const void* src, size_t count)
  */
 
 int reverse_server;
+int upstream_forward;
+char * upstream_base64_auth_string;
 char remote_host[128];
 int remote_port;
 int local_port;
@@ -99,6 +107,14 @@ int remote_sock;
 char * header_buffer;
 char * base64_auth_string;
 
+enum
+{
+    FLG_NONE = 0,       /* 正常数据流不进行编解码 */
+    R_C_DEC = 1,        /* 读取客户端数据仅进行解码 */
+    W_S_ENC = 2         /* 发送到服务端进行编码 */
+};
+
+static int io_flag; /* 网络io的一些标志位 */
 
 // Proxy回环等待客户端的连接请求
 void server_loop();
@@ -110,13 +126,22 @@ void handle_client(int client_sock, struct sockaddr_in client_addr);
 void forward_header(int destination_sock);
 
 // Proxy从source_sock接收数据，并把接收到的数据转发到destination_sock上
-void forward_data(int source_sock, int destination_sock);
+int forward_data(int source_sock, int destination_sock);
 
 // 重写HTTP头部
 void rewrite_header();
 
 // 重写代理路径
 void rewrite_proxy_path();
+
+// 响应隧道连接请求
+int send_tunnel_ok(int client_sock);
+
+// 发送数据
+int send_data(int socket,char * buffer,int len);
+
+// 接收数据
+int receive_data(int socket, char * buffer, int len);
 
 // 创建proxy与服务器的连接
 int create_connection();
@@ -133,6 +158,12 @@ int get_header(const char *header, char *name, char *value);
 
 // 去掉header
 int strip_header(char *name);
+
+// 设置header
+int set_header(char *name, char *value);
+
+// 添加header
+int add_header(char *name, char *value);
 
 // 设置远程服务器
 void set_remote_server(char *server);
@@ -154,7 +185,7 @@ int readLine(int fd, void *buffer, int n)
 
     totRead = 0;
     for (;;) {
-        numRead = recv(fd, &ch, 1, 0);
+        numRead = receive_data(fd, &ch, 1);
 
         if (numRead == -1) {
             if (errno == EINTR)
@@ -285,14 +316,34 @@ int set_header(char *name, char *value)
     // 保存当前header(name)末尾到 header_buffer 末尾
     memcpy(temp, p1, (int)(p0 -p1));
     // 插入新header
-    char header[strlen(name) + strlen(value) + 1 + 1 + 1 + 1]; // 三个字符 : \n + 结尾符号\0
-    sprintf(header, "%s: %s\n", name, value);
+    char header[strlen(name) + strlen(value) + 5]; // 5个字符 : \r\n + 结尾符号\0
+    sprintf(header, "%s: %s\r\n", name, value);
     memcpy(p, header, strlen(header));
     // 插入原剩余header
     memcpy(p + strlen(header), temp, strlen(temp));
     int len = strlen(header_buffer);
     int l = len - (p1 - p) + strlen(header);
     header_buffer[l] = '\0';
+    return 0;
+}
+
+// 设置header
+int add_header(char *name, char *value)
+{
+    if (set_header(name, value) < 0)
+    {
+        char header[strlen(name) + strlen(value) + 8]; // 8个字符 \r\n : \r\n\r\n\0
+        sprintf(header, "\r\n%s: %s\r\n\r\n", name, value);
+        int i = strlen(header_buffer) - 1;
+        while (header_buffer[i] == '\r' || header_buffer[i] == '\n')
+        {
+            i--;
+        }
+        header_buffer[i+1]='\0';
+        LOG("header_buffer:\n%s\n", header_buffer);
+        strcat(header_buffer, header);
+        LOG("header_buffer:\n%s\n", header_buffer);
+    }
     return 0;
 }
 
@@ -337,10 +388,14 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
         return;
     }
 
+    #ifdef DEBUG
+    LOG("Received headers: \n%s\n", header_buffer);
+    #endif
+
     if(strlen(remote_host) == 0) // 未指定远端主机名称从 http 请求 HOST 字段中获取
     {
         char * hoststring = (char *) malloc(MAX_HEADER_VALUE_SIZE);
-        if(get_header(header_buffer, "Host", hoststring) < 0)
+        if (get_header(header_buffer, "Host", hoststring) < 0)
         {
             LOG("Cannot extract host field : Request from client: [%s:%d]\n", client_ip, client_port);
             return;
@@ -350,18 +405,24 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
 
     if (base64_auth_string)
     {
-        if (!reverse_server) {
+        if (!reverse_server || upstream_forward) {
             char * authstring = (char *) malloc(MAX_HEADER_VALUE_SIZE);
             if (get_header(header_buffer, "Proxy-Authorization", authstring) < 0)
             {
                 LOG("Proxy auth required\n");
                 // 发送407代理需要鉴权消息
-                char * auth_response = (char *) malloc(200);
-                sprintf(auth_response, "%s\r\n\r\n", PROXY_AUTHENTICATION_REQUIRED_RESPONSE);
-                send(client_sock, auth_response, strlen(auth_response), 0);
+                if (io_flag == R_C_DEC)
+                {
+                    io_flag = W_S_ENC; // 接收客户端请求进行解码，那么响应客户端请求需要编码
+                } else {
+                    io_flag=FLG_NONE; // 否则响应客户端请求不编码
+                }
+                send_data(client_sock, PROXY_AUTHENTICATION_REQUIRED_RESPONSE, strlen(PROXY_AUTHENTICATION_REQUIRED_RESPONSE));
                 return;
             }
-            // LOG("Detected Proxy-Authorization: %s\n", authstring);
+            #ifdef DEBUG
+            LOG("Detected Proxy-Authorization: %s\n", authstring);
+            #endif
             /* currently only "basic" auth supported */
             int auth_failure = 1;
             if ((strncmp(authstring, "Basic ", 6) == 0 || strncmp(authstring, "basic ", 6) == 0) &&
@@ -372,9 +433,13 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
             if(auth_failure) {
                 LOG("Proxy auth error with header Proxy-Authorization: %s \n", authstring);
                 // 发送401代理鉴权失败消息
-                char * auth_response = (char *) malloc(200);
-                sprintf(auth_response, "%s\r\n\r\n", PROXY_UNAUTHORIZED_RESPONSE);
-                send(client_sock, auth_response, strlen(auth_response), 0);
+                if (io_flag == R_C_DEC)
+                {
+                    io_flag = W_S_ENC; // 接收客户端请求进行解码，那么响应客户端请求需要编码
+                } else {
+                    io_flag=FLG_NONE; // 否则响应客户端请求不编码
+                }
+                send_data(client_sock, PROXY_UNAUTHORIZED_RESPONSE, strlen(PROXY_UNAUTHORIZED_RESPONSE));
                 return;
             }
         } else {
@@ -384,9 +449,7 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
             {
                 LOG("WWW-Authorization required\n");
                 // 发送401未授权消息
-                char * auth_response = (char *) malloc(200);
-                sprintf(auth_response, "%s\r\n\r\n", WWW_UNAUTHORIZED_RESPONSE);
-                send(client_sock, auth_response, strlen(auth_response), 0);
+                send_data(client_sock, WWW_UNAUTHORIZED_RESPONSE, strlen(WWW_UNAUTHORIZED_RESPONSE));
                 return;
             }
             LOG("Detected Authorization: %s\n", authstring);
@@ -398,11 +461,9 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
                 auth_failure = 0;
             }
             if(auth_failure) {
-                LOG("Proxy auth error\n");
+                LOG("WWW-Authorization error\n");
                 // 发送401未授权消息
-                char * auth_response = (char *) malloc(200);
-                sprintf(auth_response, "%s\r\n\r\n", WWW_UNAUTHORIZED_RESPONSE);
-                send(client_sock, auth_response, strlen(auth_response), 0);
+                send_data(client_sock, WWW_UNAUTHORIZED_RESPONSE, strlen(WWW_UNAUTHORIZED_RESPONSE));
                 return;
             }
         }
@@ -413,60 +474,130 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
         return;
     }
 
-    LOG("Connected to remote host: [%s:%d]\n", remote_host, remote_port);
+    if (upstream_forward) {
+        LOG("Connected to remote host(upstream proxy): [%s:%d]\n", remote_host, remote_port);
+    } else if (reverse_server) {
+        LOG("Connected to remote host(reverse proxy): [%s:%d]\n", remote_host, remote_port);
+    } else {
+        LOG("Connected to remote host: [%s:%d]\n", remote_host, remote_port);
+    }
 
     char * is_connect = strstr(header_buffer, "CONNECT ");
 
     if (fork() == 0) { // 创建子进程用于从客户端转发数据到远端socket接口
-        if (strlen(header_buffer) > 0 && !is_connect)
+        if (strlen(header_buffer) > 0 && (!is_connect || upstream_forward))
         {
             forward_header(remote_sock); // 转发HTTP Header
         }
 
-        LOG("Transfer data [%s:%d]-->[%s:%d]\n", client_ip, client_port, remote_host, remote_port);
-        forward_data(client_sock, remote_sock);
+        LOG("Transfer data start [%s:%d]-->[%s:%d]\n", client_ip, client_port, remote_host, remote_port);
+        int b = forward_data(client_sock, remote_sock);
+        LOG("Transfer data end [%s:%d]-->[%s:%d] [total: %d bytes]\n", client_ip, client_port, remote_host, remote_port, b);
         exit(0);
     }
 
     if (fork() == 0) { // 创建子进程用于转发从远端socket接口过来的数据到客户端
-
-        LOG("Transfer data [%s:%d]-->[%s:%d]\n", remote_host, remote_port, client_ip, client_port);
-        forward_data(remote_sock, client_sock);
+        if(io_flag == W_S_ENC)
+        {
+            io_flag = R_C_DEC; //发送请求给服务端进行编码，读取服务端的响应则进行解码
+        } else if (io_flag == R_C_DEC)
+        {
+            io_flag = W_S_ENC; //接收客户端请求进行解码，那么响应客户端请求需要编码
+        }
+        if (is_connect && !upstream_forward) {
+            // 等待子进程开始监听转发
+            usleep(10);
+            send_tunnel_ok(client_sock);
+        }
+        LOG("Transfer data start [%s:%d]-->[%s:%d]\n", remote_host, remote_port, client_ip, client_port);
+        int b = forward_data(remote_sock, client_sock);
+        LOG("Transfer data end [%s:%d]-->[%s:%d] [total: %d bytes]\n", remote_host, remote_port, client_ip, client_port, b);
         exit(0);
     }
-
-    if (is_connect) {
-        // 等待子进程开始监听转发
-        usleep(10);
-        // 发送 connect 成功消息
-        char * connect_response = (char *) malloc(200);
-        sprintf(connect_response, "%s\r\n\r\n", SSL_CONNECTION_RESPONSE);
-        send(client_sock, connect_response, strlen(connect_response), 0);
-    }
-
-    LOG("Close sock:  Proxy <===> [%s:%d] \n", client_ip, client_port);
     close(client_sock);
-    LOG("Close sock:  Proxy <===> [%s:%d] \n", remote_host, remote_port);
     close(remote_sock);
+}
+
+// 响应隧道连接请求
+int send_tunnel_ok(int client_sock)
+{
+    char * resp = SSL_CONNECTION_RESPONSE;
+    int len = strlen(resp);
+    char buffer[len+1];
+    strcpy(buffer,resp);
+    if(send_data(client_sock,buffer,len) < 0)
+    {
+        perror("Send http tunnel response failed\n");
+        return -1;
+    }
+    return 0;
+}
+
+// 发送数据
+int send_data(int socket,char * buffer,int len)
+{
+    #ifdef ENCRYPTION_DEBUG
+    LOG("Before Encode:\n %s\n", buffer);
+    #endif
+    if(io_flag == W_S_ENC)
+    {
+        int i;
+        for(i = 0; i < len ; i++)
+        {
+            buffer[i] ^= 1;
+
+        }
+    }
+    #ifdef ENCRYPTION_DEBUG
+    LOG("After Encode:\n %s\n", buffer);
+    #endif
+    return send(socket,buffer,len,0);
+}
+
+int receive_data(int socket, char * buffer, int len)
+{
+    int n = recv(socket, buffer, len, 0);
+    #ifdef ENCRYPTION_DEBUG
+    LOG("Before Decode:\n %s\n", buffer);
+    #endif
+    if(io_flag == R_C_DEC && n > 0)
+    {
+        int i;
+        for(i = 0; i< n; i++ )
+        {
+            buffer[i] ^= 1;
+            // printf("%d => %d\n",c,buffer[i]);
+        }
+    }
+    #ifdef ENCRYPTION_DEBUG
+    LOG("After Decode:\n %s\n", buffer);
+    #endif
+    return n;
 }
 
 // 转发HTTP Header
 void forward_header(int destination_sock)
 {
     rewrite_header();
-    strip_header("Proxy-Authorization");
-    strip_header("Keep-Alive");
-    strip_header("Proxy-Authenticate");
-    strip_header("Proxy-Connection");
-    // LOG("rewrite_header:\n %s\n", header_buffer);
-    int len = strlen(header_buffer);
-    send(destination_sock, header_buffer, len, 0) ;
+    #ifdef DEBUG
+    LOG("Rewrited header: \n %s\n", header_buffer);
+    #endif
+    send_data(destination_sock, header_buffer, strlen(header_buffer));
 }
 
 // 重写请求头
 void rewrite_header()
 {
     rewrite_proxy_path();
+    if (upstream_forward && upstream_base64_auth_string) {
+        add_header("Proxy-Authorization", upstream_base64_auth_string);
+    } else {
+        strip_header("Proxy-Authorization");
+    }
+    strip_header("Keep-Alive");
+    strip_header("Proxy-Authenticate");
+    strip_header("Proxy-Connection");
+
     if (reverse_server) {
         set_header("Host", remote_host);
     }
@@ -503,14 +634,20 @@ void rewrite_proxy_path()
 }
 
 // 转发数据
-void forward_data(int source_sock, int destination_sock) {
+int forward_data(int source_sock, int destination_sock) {
     char buffer[BUF_SIZE];
     int n;
+    int s = 0;
 
-    while ((n = recv(source_sock, buffer, BUF_SIZE, 0)) > 0)
+    while ((n = receive_data(source_sock, buffer, BUF_SIZE)) > 0)
     {
-        send(destination_sock, buffer, n, 0);
+        send_data(destination_sock, buffer, n);
+        s += n;
     }
+
+    shutdown(destination_sock, SHUT_RDWR);
+    shutdown(source_sock, SHUT_RDWR);
+    return s;
 }
 
 // 连接远程服务器
@@ -533,7 +670,7 @@ int create_connection() {
     memcpy(&server_addr.sin_addr.s_addr, server->h_addr, server->h_length);
     server_addr.sin_port = htons(remote_port);
 
-    LOG("Connect to remote host: [%s:%d]\n",remote_host,remote_port);
+    // LOG("Connect to remote host: [%s:%d]\n",remote_host,remote_port);
     if (connect(sock, (struct sockaddr *) &server_addr, sizeof(server_addr)) < 0) {
         return -1;
     }
@@ -592,7 +729,12 @@ void server_loop() {
         }
         close(client_sock);
     }
+}
 
+/* 处理僵尸进程 */
+void sigchld_handler(int signal)
+{
+    while (waitpid(-1, NULL, WNOHANG) > 0);
 }
 
 // 启动监听服务
@@ -600,6 +742,8 @@ void start_server()
 {
     //初始化全局变量
     header_buffer = (char *) malloc(MAX_HEADER_SIZE);
+
+    signal(SIGCHLD, sigchld_handler); // 防止子进程变成僵尸进程
 
     if ((server_sock = create_server_socket(local_port)) < 0)
     {
@@ -614,10 +758,14 @@ void start_server()
 void usage(void)
 {
     printf("Usage:\n");
-    printf("\t-h : Print usage \n");
-    printf("\t-p <port number> : Specifyed local listen port \n");
-    printf("\t-u <user:pass> : Specifyed basic authorization of proxy \n");
-    printf("\t-r <remote_host:remote_port> : Specifyed remote host and port of reverse proxy. Only support http service now. \n");
+    printf("\t-p <port number> : Specifyed local listen port.\n");
+    printf("\t-a <user:pass> : Specifyed basic authorization of proxy.\n");
+    printf("\t-r <remote_host:remote_port> : Specifyed remote host and port of reverse proxy. Only support http service now.\n");
+    printf("\t-f <remote_host:remote_port> : Specifyed remote host and port of upstream proxy.\n");
+    printf("\t-A <user:pass> : Specifyed basic authorization of upstream proxy.\n");
+    printf("\t-E : Encode data when forwarding data. Available in forwarding upstream proxy.\n");
+    printf ("\t-D : Decode data when receiving data. Available in forwarding upstream proxy.\n");
+    printf("\t-h : Print usage.\n");
     exit(0);
 }
 
@@ -625,9 +773,10 @@ void usage(void)
 int main(int argc, char *argv[])
 {
     local_port = DEFAULT_LOCAL_PORT;
+    io_flag = FLG_NONE;
 
 	int opt;
-	char optstrs[] = "p:u:r:h";
+	char optstrs[] = "p:a:r:f:A:EDh";
 
 	while((opt = getopt(argc, argv, optstrs)) != -1)
 	{
@@ -636,24 +785,62 @@ int main(int argc, char *argv[])
 			case 'p':
 				local_port = atoi(optarg);
 				break;
-            case 'u':
-                base64_auth_string = (char *) malloc(1024);
+            case 'a':
+                if (MAX_AUTH_STRING_SIZE < (BASE64ENC_BYTES(strlen(optarg)) + 1))
+                {
+                    printf("Authorization string is too long\n");
+                    usage();
+                }
+                base64_auth_string = (char *) malloc(MAX_AUTH_STRING_SIZE);
                 base64enc(base64_auth_string, optarg, strlen(optarg));
-                // printf("\nBase64 of auth %s(size %lu) is: %s(size %lu)\n", optarg, strlen(optarg), base64_auth_string, strlen(base64_auth_string));
+                #ifdef DEBUG
+                LOG("\nBase64 of auth %s(size %lu) is: %s(size %lu)\n", optarg, strlen(optarg), base64_auth_string, strlen(base64_auth_string));
+                #endif
 				break;
             case 'h':
                 usage();
                 break;
             case 'r':
+            case 'f':
                 set_remote_server(optarg);
-                reverse_server=1;
-                LOG("Reverse proxy remote server %s:%d\n", remote_host, remote_port);
+                if (opt == 'r') {
+                    reverse_server=1;
+                    LOG("Reverse proxy remote server %s:%d\n", remote_host, remote_port);
+                } else {
+                    upstream_forward=1;
+                    LOG("Upstream proxy remote server %s:%d\n", remote_host, remote_port);
+                }
                 break;
+            case 'A':
+                if (MAX_AUTH_STRING_SIZE < (BASE64ENC_BYTES(strlen(optarg)) + 1))
+                {
+                    printf("Authorization string is too long\n");
+                    usage();
+                }
+                upstream_base64_auth_string = (char *) malloc(MAX_AUTH_STRING_SIZE);
+                char * tmp = (char *) malloc(MAX_AUTH_STRING_SIZE);
+                base64enc(tmp, optarg, strlen(optarg));
+                sprintf(upstream_base64_auth_string, "Basic %s", tmp);
+                #ifdef DEBUG
+                LOG("\nBase64 of auth %s(size %lu) is: %s(size %lu)\n", optarg, strlen(optarg), upstream_base64_auth_string, strlen(upstream_base64_auth_string));
+                #endif
+                break;
+			case 'E':
+				io_flag = W_S_ENC;
+				break;
+			case 'D':
+				io_flag = R_C_DEC;
+				break;
 			case '?':
 				printf("\nInvalid argument: %c\n", optopt);
 			default:
 				usage();
 		}
+    }
+
+    if (reverse_server && io_flag != FLG_NONE) {
+        printf("Reverse proxy server is not support encryption\n");
+        usage();
     }
 
     LOG("Proxy server start on port : %d\n", local_port);
