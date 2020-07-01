@@ -106,6 +106,8 @@ int server_sock;
 int client_sock;
 int remote_sock;
 
+int is_http_tunnel = 0;
+
 char * header_buffer;
 char * base64_auth_string;
 
@@ -484,10 +486,13 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
         LOG("Connected to remote host: [%s:%d]\n", remote_host, remote_port);
     }
 
-    char * is_connect = strstr(header_buffer, "CONNECT ");
+    char * mp = strstr(header_buffer, "CONNECT ");
+    if (mp) {
+        is_http_tunnel = 1;
+    }
 
     if (fork() == 0) { // 创建子进程用于从客户端转发数据到远端socket接口
-        if (strlen(header_buffer) > 0 && (!is_connect || upstream_forward))
+        if (strlen(header_buffer) > 0 && (!is_http_tunnel || upstream_forward))
         {
             forward_header(remote_sock); // 转发HTTP Header
         }
@@ -506,7 +511,7 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
         {
             io_flag = W_S_ENC; //接收客户端请求进行解码，那么响应客户端请求需要编码
         }
-        if (is_connect && !upstream_forward) {
+        if (is_http_tunnel && !upstream_forward) {
             // 等待子进程开始监听转发
             usleep(10);
             send_tunnel_ok(client_sock);
@@ -590,7 +595,10 @@ void forward_header(int destination_sock)
 // 重写请求头
 void rewrite_header()
 {
-    rewrite_proxy_path();
+    if (!is_http_tunnel && !upstream_forward) {
+        // 普通http请求在非转发上游模式才重写代理路径
+        rewrite_proxy_path();
+    }
     if (upstream_forward && upstream_base64_auth_string) {
         add_header("Proxy-Authorization", upstream_base64_auth_string);
     } else {
