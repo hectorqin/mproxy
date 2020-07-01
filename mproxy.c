@@ -582,7 +582,7 @@ void forward_header(int destination_sock)
 {
     rewrite_header();
     #ifdef DEBUG
-    LOG("Rewrited header: \n %s\n", header_buffer);
+    LOG("Rewrited header: \n%s\n", header_buffer);
     #endif
     send_data(destination_sock, header_buffer, strlen(header_buffer));
 }
