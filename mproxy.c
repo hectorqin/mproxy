@@ -25,9 +25,11 @@
 #define READ  0
 #define WRITE 1
 
-#define MAX_HEADER_SIZE 8192
+#define MAX_HEADER_SIZE 65536
 
-#define MAX_HEADER_VALUE_SIZE 2048
+#define MAX_HEADER_LINE_SIZE 8192
+
+#define MAX_HEADER_VALUE_SIZE 8192
 
 #define MAX_AUTH_STRING_SIZE 128
 
@@ -219,14 +221,14 @@ int readLine(int fd, void *buffer, int n)
 int read_header(int fd, void *buffer)
 {
     memset(header_buffer,0,MAX_HEADER_SIZE);
-    char line_buffer[2048];
+    char line_buffer[MAX_HEADER_LINE_SIZE];
     char * base_ptr = header_buffer;
 
     for(;;)
     {
-        memset(line_buffer,0,2048);
+        memset(line_buffer,0,MAX_HEADER_LINE_SIZE);
 
-        int total_read = readLine(fd, line_buffer, 2048);
+        int total_read = readLine(fd, line_buffer, MAX_HEADER_LINE_SIZE);
         if(total_read <= 0)
         {
             return -1;
