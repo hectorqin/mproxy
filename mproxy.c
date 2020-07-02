@@ -13,7 +13,7 @@
 #include <netinet/in.h>
 #include <string.h>
 
-#define DEBUG 1
+// #define DEBUG 1
 // #define ENCRYPTION_DEBUG 0
 
 #define DEFAULT_LOCAL_PORT 8080
