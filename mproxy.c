@@ -13,7 +13,6 @@
 #include <netinet/in.h>
 #include <string.h>
 
-// #define DEBUG 1
 // #define ENCRYPTION_DEBUG 0
 
 #define DEFAULT_LOCAL_PORT 8080
@@ -38,15 +37,72 @@
 #define HEADER_BUFFER_FULL -10
 #define BAD_HTTP_PROTOCOL -11
 
+// log level
+#define LOG_LEVEL_NONE 0
+#define LOG_LEVEL_ERROR 1
+#define LOG_LEVEL_INFO 2
+#define LOG_LEVEL_DEBUG 3
+
 #if defined(OS_ANDROID)
 #include <android/log.h>
-#define LOG(fmt...) __android_log_print(ANDROID_LOG_DEBUG,__FILE__,##fmt)
+#define LOG(fmt...) __android_log_print(ANDROID_LOG_DEBUG, __FILE__, ##fmt)
+#define LOGE(fmt...)                                                 \
+    do                                                               \
+    {                                                                \
+        if (log_level >= LOG_LEVEL_ERROR)                            \
+        {                                                            \
+            __android_log_print(ANDROID_LOG_ERROR, __FILE__, ##fmt); \
+        }                                                            \
+    } while (0)
+#define LOGI(fmt...)                                                \
+    do                                                              \
+    {                                                               \
+        if (log_level >= LOG_LEVEL_INFO)                            \
+        {                                                           \
+            __android_log_print(ANDROID_LOG_INFO, __FILE__, ##fmt); \
+        }                                                           \
+    } while (0)
+#define LOGD(fmt...)                                                 \
+    do                                                               \
+    {                                                                \
+        if (log_level >= LOG_LEVEL_DEBUG)                            \
+        {                                                            \
+            __android_log_print(ANDROID_LOG_DEBUG, __FILE__, ##fmt); \
+        }                                                            \
+    } while (0)
 #else
-#define LOG(fmt...)             \
-    do                          \
-    {                           \
-        fprintf(stderr,"[%s %s] ",__DATE__,__TIME__); \
-        fprintf(stderr, ##fmt); \
+#define LOG(fmt...)                                      \
+    do                                                   \
+    {                                                    \
+        fprintf(stderr, "[%s %s] ", __DATE__, __TIME__); \
+        fprintf(stderr, ##fmt);                          \
+    } while (0)
+#define LOGE(fmt...)                                                \
+    do                                                              \
+    {                                                               \
+        if (log_level >= LOG_LEVEL_ERROR)                           \
+        {                                                           \
+            fprintf(stderr, "[%s %s] ERROR: ", __DATE__, __TIME__); \
+            fprintf(stderr, ##fmt);                                 \
+        }                                                           \
+    } while (0)
+#define LOGI(fmt...)                                               \
+    do                                                             \
+    {                                                              \
+        if (log_level >= LOG_LEVEL_INFO)                           \
+        {                                                          \
+            fprintf(stderr, "[%s %s] INFO: ", __DATE__, __TIME__); \
+            fprintf(stderr, ##fmt);                                \
+        }                                                          \
+    } while (0)
+#define LOGD(fmt...)                                                \
+    do                                                              \
+    {                                                               \
+        if (log_level >= LOG_LEVEL_DEBUG)                           \
+        {                                                           \
+            fprintf(stderr, "[%s %s] DEBUG: ", __DATE__, __TIME__); \
+            fprintf(stderr, ##fmt);                                 \
+        }                                                           \
     } while (0)
 #endif
 
@@ -119,6 +175,9 @@ int local_port;
 int server_sock;
 int client_sock;
 int remote_sock;
+
+// 日志级别
+int log_level = LOG_LEVEL_ERROR;
 
 // 是否 CONNECT 请求
 int is_http_tunnel = 0;
@@ -327,7 +386,7 @@ int get_host(const char *header, char *value)
         }
         char *p4 = strstr(first_line, " HTTP/");
         int h_len = (int)(p4 - p3 - 7); // 减去http://的7个字符
-        strncpy(value, p3 + 7, h_len); // 赋值 host:port/path 给value
+        strncpy(value, p3 + 7, h_len);  // 赋值 host:port/path 给value
         char *p5 = strstr(value, "/");
         if (p5)
         {
@@ -433,9 +492,9 @@ int add_header(char *name, char *value)
             i--;
         }
         header_buffer[i + 1] = '\0';
-        LOG("header_buffer:\n%s\n", header_buffer);
+        LOGD("header_buffer:\n%s\n", header_buffer);
         strcat(header_buffer, header);
-        LOG("header_buffer:\n%s\n", header_buffer);
+        LOGD("header_buffer:\n%s\n", header_buffer);
     }
     return 0;
 }
@@ -476,17 +535,15 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
     client_ip = inet_ntoa(client_addr.sin_addr);
     client_port = client_addr.sin_port;
 
-    LOG("Request arrived from client: [%s:%d]\n", client_ip, client_port);
+    LOGI("Request arrived from client: [%s:%d]\n", client_ip, client_port);
 
     if (read_header(client_sock, header_buffer) < 0)
     {
-        LOG("Read Http header failed : Request from client: [%s:%d]\n", client_ip, client_port);
+        LOGE("Read Http header failed : Request from client: [%s:%d]\n", client_ip, client_port);
         return;
     }
 
-#ifdef DEBUG
-    LOG("Received headers: \n%s\n", header_buffer);
-#endif
+    LOGD("Received headers: \n%s\n", header_buffer);
 
     if (strlen(remote_host) == 0) // 未指定远端主机名称从 http 请求 HOST 字段中获取
     {
@@ -495,18 +552,16 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
         {
             if (is_strict_host)
             {
-                LOG("Cannot extract host field : Request from client: [%s:%d]\n", client_ip, client_port);
+                LOGE("Cannot extract host field : Request from client: [%s:%d]\n", client_ip, client_port);
                 return;
             }
             if (get_header(header_buffer, "Host", hoststring) < 0)
             {
-                LOG("Cannot extract host field : Request from client: [%s:%d]\n", client_ip, client_port);
+                LOGE("Cannot extract host field : Request from client: [%s:%d]\n", client_ip, client_port);
                 return;
             }
         }
-#ifdef DEBUG
-        LOG("Parsed hoststring: \n%s\n", hoststring);
-#endif
+        LOGD("Parsed hoststring: \n%s\n", hoststring);
         set_remote_server(hoststring);
     }
 
@@ -517,7 +572,7 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
             char *authstring = (char *)malloc(MAX_HEADER_VALUE_SIZE);
             if (get_header(header_buffer, "Proxy-Authorization", authstring) < 0)
             {
-                LOG("Proxy auth required\n");
+                LOGE("Proxy auth required\n");
                 // 发送407代理需要鉴权消息
                 if (io_flag == R_C_DEC)
                 {
@@ -530,9 +585,7 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
                 send_data(client_sock, PROXY_AUTHENTICATION_REQUIRED_RESPONSE, strlen(PROXY_AUTHENTICATION_REQUIRED_RESPONSE));
                 return;
             }
-#ifdef DEBUG
-            LOG("Detected Proxy-Authorization: %s\n", authstring);
-#endif
+            LOGD("Detected Proxy-Authorization: %s\n", authstring);
             /* currently only "basic" auth supported */
             int auth_failure = 1;
             if ((strncmp(authstring, "Basic ", 6) == 0 || strncmp(authstring, "basic ", 6) == 0) &&
@@ -542,7 +595,7 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
             }
             if (auth_failure)
             {
-                LOG("Proxy auth error with header Proxy-Authorization: %s \n", authstring);
+                LOGE("Proxy auth error with header Proxy-Authorization: %s \n", authstring);
                 // 发送401代理鉴权失败消息
                 if (io_flag == R_C_DEC)
                 {
@@ -562,12 +615,12 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
             char *authstring = (char *)malloc(MAX_HEADER_VALUE_SIZE);
             if (get_header(header_buffer, "Authorization", authstring) < 0)
             {
-                LOG("WWW-Authorization required\n");
+                LOGE("WWW-Authorization required\n");
                 // 发送401未授权消息
                 send_data(client_sock, WWW_UNAUTHORIZED_RESPONSE, strlen(WWW_UNAUTHORIZED_RESPONSE));
                 return;
             }
-            LOG("Detected Authorization: %s\n", authstring);
+            LOGI("Detected Authorization: %s\n", authstring);
             /* currently only "basic" auth supported */
             int auth_failure = 1;
             if ((strncmp(authstring, "Basic ", 6) == 0 || strncmp(authstring, "basic ", 6) == 0) &&
@@ -577,7 +630,7 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
             }
             if (auth_failure)
             {
-                LOG("WWW-Authorization error\n");
+                LOGE("WWW-Authorization error\n");
                 // 发送401未授权消息
                 send_data(client_sock, WWW_UNAUTHORIZED_RESPONSE, strlen(WWW_UNAUTHORIZED_RESPONSE));
                 return;
@@ -587,21 +640,21 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
 
     if ((remote_sock = create_connection()) < 0)
     {
-        LOG("Proxy cannot connect to host [%s:%d]\n", remote_host, remote_port);
+        LOGE("Proxy cannot connect to host [%s:%d]\n", remote_host, remote_port);
         return;
     }
 
     if (is_forward_upstream_proxy)
     {
-        LOG("Connected to remote host(upstream proxy): [%s:%d]\n", remote_host, remote_port);
+        LOGI("Connected to remote host(upstream proxy): [%s:%d]\n", remote_host, remote_port);
     }
     else if (is_reverse_server)
     {
-        LOG("Connected to remote host(reverse proxy): [%s:%d]\n", remote_host, remote_port);
+        LOGI("Connected to remote host(reverse proxy): [%s:%d]\n", remote_host, remote_port);
     }
     else
     {
-        LOG("Connected to remote host: [%s:%d]\n", remote_host, remote_port);
+        LOGI("Connected to remote host: [%s:%d]\n", remote_host, remote_port);
     }
 
     char *mp = strstr(header_buffer, "CONNECT ");
@@ -617,9 +670,9 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
             forward_header(remote_sock); // 转发HTTP Header
         }
 
-        LOG("Transfer data start [%s:%d]-->[%s:%d]\n", client_ip, client_port, remote_host, remote_port);
+        LOGI("Transfer data start [%s:%d]-->[%s:%d]\n", client_ip, client_port, remote_host, remote_port);
         int b = forward_data(client_sock, remote_sock);
-        LOG("Transfer data end [%s:%d]-->[%s:%d] [total: %d bytes]\n", client_ip, client_port, remote_host, remote_port, b);
+        LOGI("Transfer data end [%s:%d]-->[%s:%d] [total: %d bytes]\n", client_ip, client_port, remote_host, remote_port, b);
         exit(0);
     }
 
@@ -639,9 +692,9 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
             usleep(10);
             send_tunnel_ok(client_sock);
         }
-        LOG("Transfer data start [%s:%d]-->[%s:%d]\n", remote_host, remote_port, client_ip, client_port);
+        LOGI("Transfer data start [%s:%d]-->[%s:%d]\n", remote_host, remote_port, client_ip, client_port);
         int b = forward_data(remote_sock, client_sock);
-        LOG("Transfer data end [%s:%d]-->[%s:%d] [total: %d bytes]\n", remote_host, remote_port, client_ip, client_port, b);
+        LOGI("Transfer data end [%s:%d]-->[%s:%d] [total: %d bytes]\n", remote_host, remote_port, client_ip, client_port, b);
         exit(0);
     }
     close(client_sock);
@@ -708,9 +761,7 @@ int receive_data(int socket, char *buffer, int len)
 void forward_header(int destination_sock)
 {
     rewrite_header();
-#ifdef DEBUG
-    LOG("Rewrited header: \n%s\n", header_buffer);
-#endif
+    LOGD("Rewrited header: \n%s\n", header_buffer);
     send_data(destination_sock, header_buffer, strlen(header_buffer));
 }
 
@@ -830,7 +881,8 @@ int create_server_socket(int port)
         return SERVER_SOCKET_ERROR;
     }
 
-    if (setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0) {
+    if (setsockopt(server_sock, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval)) < 0)
+    {
         return SERVER_SETSOCKOPT_ERROR;
     }
 
@@ -868,7 +920,7 @@ void server_loop()
         client_ip = inet_ntoa(client_addr.sin_addr);
         client_port = client_addr.sin_port;
 
-        LOG("Accepted connect from client: [%s:%d]\n", client_ip, client_port);
+        LOGI("Accepted connect from client: [%s:%d]\n", client_ip, client_port);
 
         if (fork() == 0)
         { // 创建子进程处理客户端连接请求
@@ -897,7 +949,7 @@ void start_server(int is_daemon)
 
     if ((server_sock = create_server_socket(local_port)) < 0)
     {
-        LOG("Cannot run server on port %d\n", local_port);
+        LOGE("Cannot run server on port %d\n", local_port);
         exit(-1);
     }
 
@@ -919,7 +971,7 @@ void start_server(int is_daemon)
         }
         else
         {
-            LOG("Cannot daemonize\n");
+            LOGE("Cannot daemonize\n");
             exit(pid);
         }
     }
@@ -938,10 +990,12 @@ void usage(void)
     printf("\t-r <remote_host:remote_port> : Specifyed remote host and port of reverse proxy. Only support http service now.\n");
     printf("\t-f <remote_host:remote_port> : Specifyed remote host and port of upstream proxy.\n");
     printf("\t-A <user:pass> : Specifyed basic authorization of upstream proxy.\n");
+    printf("\t-l <log_level> : Specifyed log level. error:1,info:2,debug:3\n");
     printf("\t-E : Encode data when forwarding data. Available in forwarding upstream proxy.\n");
     printf("\t-D : Decode data when receiving data. Available in forwarding upstream proxy.\n");
     printf("\t-s : Get remote host and port from first line strictly.\n");
     printf("\t-d : Run as daemon.\n");
+    printf("\t-v : Log verborse.\n");
     printf("\t-h : Print usage.\n");
     exit(0);
 }
@@ -954,7 +1008,7 @@ int main(int argc, char *argv[])
     int daemon = 0;
 
     int opt;
-    char optstrs[] = "p:a:r:f:A:EDsdh";
+    char optstrs[] = "p:a:r:f:A:l:EDsdvh";
 
     while ((opt = getopt(argc, argv, optstrs)) != -1)
     {
@@ -981,12 +1035,12 @@ int main(int argc, char *argv[])
             if (opt == 'r')
             {
                 is_reverse_server = 1;
-                LOG("Reverse proxy remote server %s:%d\n", remote_host, remote_port);
+                LOGI("Reverse proxy remote server %s:%d\n", remote_host, remote_port);
             }
             else
             {
                 is_forward_upstream_proxy = 1;
-                LOG("Upstream proxy remote server %s:%d\n", remote_host, remote_port);
+                LOGI("Upstream proxy remote server %s:%d\n", remote_host, remote_port);
             }
             break;
         case 'A':
@@ -999,9 +1053,10 @@ int main(int argc, char *argv[])
             char *tmp = (char *)malloc(MAX_AUTH_STRING_SIZE);
             base64enc(tmp, optarg, strlen(optarg));
             sprintf(upstream_base64_auth_string, "Basic %s", tmp);
-#ifdef DEBUG
-            LOG("\nBase64 of auth %s(size %lu) is: %s(size %lu)\n", optarg, strlen(optarg), upstream_base64_auth_string, strlen(upstream_base64_auth_string));
-#endif
+            LOGD("\nBase64 of auth %s(size %lu) is: %s(size %lu)\n", optarg, strlen(optarg), upstream_base64_auth_string, strlen(upstream_base64_auth_string));
+            break;
+        case 'l':
+            log_level = atoi(optarg);
             break;
         case 'E':
             io_flag = W_S_ENC;
@@ -1015,8 +1070,11 @@ int main(int argc, char *argv[])
         case 'd':
             daemon = 1;
             break;
+        case 'v':
+            log_level = LOG_LEVEL_INFO;
+            break;
         case '?':
-			printf("\nInvalid argument: %c\n", optopt);
+            printf("\nInvalid argument: %c\n", optopt);
         case 'h':
         default:
             usage();
