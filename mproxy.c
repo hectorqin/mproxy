@@ -327,18 +327,14 @@ int get_host(const char *header, char *value)
         }
         char *p4 = strstr(first_line, " HTTP/");
         int h_len = (int)(p4 - p3 - 7); // 减去http://的7个字符
-        LOG("hear %d\n", h_len);
         strncpy(value, p3 + 7, h_len); // 赋值 host:port/path 给value
-        LOG("hear %s\n", value);
         char *p5 = strstr(value, "/");
         if (p5)
         {
             // 有path，去掉path
             char *temp = (char *)malloc(MAX_HEADER_LINE_SIZE);
             h_len = (int)(p5 - value);
-            LOG("hear %d\n", h_len);
             memcpy(temp, value, h_len);
-            LOG("hear %s\n", temp);
             strncpy(value, temp, h_len);
             value[h_len] = '\0'; // 字符串缩短了，补上结尾符号
         }
