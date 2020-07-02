@@ -24,6 +24,8 @@ Usage:
         -A <user:pass> : Specifyed basic authorization of upstream proxy.
         -E : Encode data when forwarding data. Available in forwarding upstream proxy.
         -D : Decode data when receiving data. Available in forwarding upstream proxy.
+        -s : Get remote host and port from first line strictly.
+        -d : Run as daemon.
         -h : Print usage.
 ```
 
@@ -39,6 +41,18 @@ Usage:
 
 ```bash
 ./mproxy -p 8999
+```
+
+### Strict host
+
+```bash
+./mproxy -s
+```
+
+### Run as daemon
+
+```bash
+./mproxy -d
 ```
 
 ### Proxy basic authentication
