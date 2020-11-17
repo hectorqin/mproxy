@@ -171,6 +171,9 @@ char remote_host[128];
 int remote_port;
 int local_port;
 
+char *client_ip;
+int client_port;
+
 // sock
 int server_sock;
 int client_sock;
@@ -235,6 +238,12 @@ int send_data(int socket, char *buffer, int len);
 
 // 接收数据
 int receive_data(int socket, char *buffer, int len);
+
+// 加密数据
+int encryt_data(char *buffer, int len);
+
+// 解密数据
+int decrypt_data(char *buffer, int len);
 
 // 创建proxy与服务器的连接
 int create_connection();
@@ -529,9 +538,6 @@ void set_remote_server(char *server)
 // 处理客户端的连接
 void handle_client(int client_sock, struct sockaddr_in client_addr)
 {
-    char *client_ip;
-    int client_port;
-
     client_ip = inet_ntoa(client_addr.sin_addr);
     client_port = client_addr.sin_port;
 
@@ -719,21 +725,38 @@ int send_tunnel_ok(int client_sock)
 // 发送数据
 int send_data(int socket, char *buffer, int len)
 {
+    if (socket == remote_sock) {
+        LOGD("Send origin data start [%s:%d]-->[%s:%d]:\n%s", client_ip, client_port, remote_host, remote_port, buffer);
+    } else {
+        LOGD("Send origin data start [%s:%d]-->[%s:%d]:\n%s", remote_host, remote_port, client_ip, client_port, buffer);
+    }
+
 #ifdef ENCRYPTION_DEBUG
     LOG("Before Encode:\n %s\n", buffer);
 #endif
     if (io_flag == W_S_ENC)
     {
-        int i;
-        for (i = 0; i < len; i++)
-        {
-            buffer[i] ^= 1;
-        }
+        encryt_data(buffer, len);
     }
 #ifdef ENCRYPTION_DEBUG
     LOG("After Encode:\n %s\n", buffer);
 #endif
+    if (socket == remote_sock) {
+        LOGD("Send data start [%s:%d]-->[%s:%d]:\n%s", client_ip, client_port, remote_host, remote_port, buffer);
+    } else {
+        LOGD("Send data start [%s:%d]-->[%s:%d]:\n%s", remote_host, remote_port, client_ip, client_port, buffer);
+    }
     return send(socket, buffer, len, 0);
+}
+
+int encryt_data(char *buffer, int len)
+{
+    int i;
+    for (i = 0; i < len; i++)
+    {
+        buffer[i] ^= 1;
+    }
+    return 0;
 }
 
 int receive_data(int socket, char *buffer, int len)
@@ -744,17 +767,28 @@ int receive_data(int socket, char *buffer, int len)
 #endif
     if (io_flag == R_C_DEC && n > 0)
     {
-        int i;
-        for (i = 0; i < n; i++)
-        {
-            buffer[i] ^= 1;
-            // printf("%d => %d\n",c,buffer[i]);
-        }
+        decrypt_data(buffer, n);
     }
 #ifdef ENCRYPTION_DEBUG
     LOG("After Decode:\n %s\n", buffer);
 #endif
+    if (socket == remote_sock) {
+        LOGD("Receive data end [%s:%d]-->[%s:%d]:\n%s", client_ip, client_port, remote_host, remote_port, buffer);
+    } else {
+        LOGD("Receive data end [%s:%d]-->[%s:%d]:\n%s", remote_host, remote_port, client_ip, client_port, buffer);
+    }
     return n;
+}
+
+int decrypt_data(char *buffer, int len)
+{
+    int i;
+    for (i = 0; i < len; i++)
+    {
+        buffer[i] ^= 1;
+        // printf("%d => %d\n",c,buffer[i]);
+    }
+    return 0;
 }
 
 // 转发HTTP Header
@@ -996,6 +1030,7 @@ void usage(void)
     printf("\t-s : Get remote host and port from first line strictly.\n");
     printf("\t-d : Run as daemon.\n");
     printf("\t-v : Log verborse.\n");
+    printf("\t-t : Log very verborse.\n");
     printf("\t-h : Print usage.\n");
     exit(0);
 }
@@ -1008,7 +1043,7 @@ int main(int argc, char *argv[])
     int daemon = 0;
 
     int opt;
-    char optstrs[] = "p:a:r:f:A:l:EDsdvh";
+    char optstrs[] = "p:a:r:f:A:l:EDsdvth";
 
     while ((opt = getopt(argc, argv, optstrs)) != -1)
     {
@@ -1072,6 +1107,9 @@ int main(int argc, char *argv[])
             break;
         case 'v':
             log_level = LOG_LEVEL_INFO;
+            break;
+        case 't':
+            log_level = LOG_LEVEL_DEBUG;
             break;
         case '?':
             printf("\nInvalid argument: %c\n", optopt);
