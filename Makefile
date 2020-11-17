@@ -11,3 +11,9 @@ mproxy.o:
 
 clean:
 	rm -rf *.o
+
+t:
+	rm -rf test.o
+	$(CC) $(CFLAGS) -c test.c
+	$(CC) $(CFLAGS) test.o -o test
+	./test

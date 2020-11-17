@@ -112,6 +112,51 @@
 #define PROXY_UNAUTHORIZED_RESPONSE "HTTP/1.0 401 Unauthorized\r\n\r\n"
 #define WWW_UNAUTHORIZED_RESPONSE "HTTP/1.0 401 Unauthorized\r\nWww-Authenticate: Basic realm=\"Restricted\"\r\n\r\n"
 
+
+/**
+ *
+ * memcpy_fixed start
+ *
+ */
+
+void *memcpy_fixed(void *dst, const void *src, size_t size)
+{
+    char *psrc;
+    char *pdst;
+
+    if(NULL == dst || NULL == src)
+    {
+        return NULL;
+    }
+
+    if((src < dst) && (char *)src + size > (char *)dst) // 自后向前拷贝
+    {
+        psrc = (char *)src + size - 1;
+        pdst = (char *)dst + size - 1;
+        while(size--)
+        {
+            *pdst-- = *psrc--;
+        }
+    }
+    else
+    {
+        psrc = (char *)src;
+        pdst = (char *)dst;
+        while(size--)
+        {
+            *pdst++ = *psrc++;
+        }
+    }
+
+    return dst;
+}
+
+/**
+ *
+ * memcpy_fixed end
+ *
+ */
+
 /**
  *
  * Base64 encode start
@@ -402,7 +447,7 @@ int get_host(const char *header, char *value)
             // 有path，去掉path
             char *temp = (char *)malloc(MAX_HEADER_LINE_SIZE);
             h_len = (int)(p5 - value);
-            memcpy(temp, value, h_len);
+            memcpy_fixed(temp, value, h_len);
             strncpy(value, temp, h_len);
             value[h_len] = '\0'; // 字符串缩短了，补上结尾符号
         }
@@ -450,7 +495,7 @@ int strip_header(char *name)
     p1 = p1 + 1;
     char *p0 = strchr(p, '\0');
     int len = strlen(header_buffer);
-    memcpy(p, p1, (int)(p0 - p1));
+    memcpy_fixed(p, p1, (int)(p0 - p1));
     int l = len - (p1 - p);
     header_buffer[l] = '\0';
     return 0;
@@ -475,13 +520,13 @@ int set_header(char *name, char *value)
     char *p0 = strchr(p, '\0');
     char *temp = (char *)malloc(MAX_HEADER_SIZE);
     // 保存当前header(name)末尾到 header_buffer 末尾
-    memcpy(temp, p1, (int)(p0 - p1));
+    memcpy_fixed(temp, p1, (int)(p0 - p1));
     // 插入新header
     char header[strlen(name) + strlen(value) + 5]; // 5个字符 : \r\n + 结尾符号\0
     sprintf(header, "%s: %s\r\n", name, value);
-    memcpy(p, header, strlen(header));
+    memcpy_fixed(p, header, strlen(header));
     // 插入原剩余header
-    memcpy(p + strlen(header), temp, strlen(temp));
+    memcpy_fixed(p + strlen(header), temp, strlen(temp));
     int len = strlen(header_buffer);
     int l = len - (p1 - p) + strlen(header);
     header_buffer[l] = '\0';
@@ -838,7 +883,7 @@ void rewrite_proxy_path()
         if (p1 && (p5 > p1))
         {
             //转换url到 path
-            memcpy(p, p1, (int)(p0 - p1));
+            memcpy_fixed(p, p1, (int)(p0 - p1));
             int l = len - (p1 - p);
             header_buffer[l] = '\0';
         }
@@ -846,7 +891,7 @@ void rewrite_proxy_path()
         {
             char *p2 = strchr(p, ' '); //GET http://3g.sina.com.cn HTTP/1.1
 
-            memcpy(p + 1, p2, (int)(p0 - p2));
+            memcpy_fixed(p + 1, p2, (int)(p0 - p2));
             *p = '/'; //url 没有路径使用根
             int l = len - (p2 - p) + 1;
             header_buffer[l] = '\0';
@@ -892,7 +937,7 @@ int create_connection()
 
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
-    memcpy(&server_addr.sin_addr.s_addr, server->h_addr, server->h_length);
+    memcpy_fixed(&server_addr.sin_addr.s_addr, server->h_addr, server->h_length);
     server_addr.sin_port = htons(remote_port);
 
     // LOG("Connect to remote host: [%s:%d]\n",remote_host,remote_port);
