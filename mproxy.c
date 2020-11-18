@@ -42,6 +42,8 @@
 #define LOG_LEVEL_ERROR 1
 #define LOG_LEVEL_INFO 2
 #define LOG_LEVEL_DEBUG 3
+#define LOG_LEVEL_DEBUG_SEND 4
+#define LOG_LEVEL_DEBUG_RECEIVE 5
 
 #if defined(OS_ANDROID)
 #include <android/log.h>
@@ -771,9 +773,11 @@ int send_tunnel_ok(int client_sock)
 int send_data(int socket, char *buffer, int len)
 {
     if (socket == remote_sock) {
-        LOGD("Send origin data start [%s:%d]-->[%s:%d]:\n%s", client_ip, client_port, remote_host, remote_port, buffer);
+        if (log_level >= LOG_LEVEL_DEBUG_SEND)
+            LOGD("Send origin data start [%s:%d]-->[%s:%d]:\n%s", client_ip, client_port, remote_host, remote_port, buffer);
     } else {
-        LOGD("Send origin data start [%s:%d]-->[%s:%d]:\n%s", remote_host, remote_port, client_ip, client_port, buffer);
+        if (log_level >= LOG_LEVEL_DEBUG_SEND)
+            LOGD("Send origin data start [%s:%d]-->[%s:%d]:\n%s", remote_host, remote_port, client_ip, client_port, buffer);
     }
 
 #ifdef ENCRYPTION_DEBUG
@@ -787,9 +791,11 @@ int send_data(int socket, char *buffer, int len)
     LOG("After Encode:\n %s\n", buffer);
 #endif
     if (socket == remote_sock) {
-        LOGD("Send data start [%s:%d]-->[%s:%d]:\n%s", client_ip, client_port, remote_host, remote_port, buffer);
+        if (log_level >= LOG_LEVEL_DEBUG_SEND)
+            LOGD("Send data start [%s:%d]-->[%s:%d]:\n%s", client_ip, client_port, remote_host, remote_port, buffer);
     } else {
-        LOGD("Send data start [%s:%d]-->[%s:%d]:\n%s", remote_host, remote_port, client_ip, client_port, buffer);
+        if (log_level >= LOG_LEVEL_DEBUG_SEND)
+            LOGD("Send data start [%s:%d]-->[%s:%d]:\n%s", remote_host, remote_port, client_ip, client_port, buffer);
     }
     return send(socket, buffer, len, 0);
 }
@@ -818,9 +824,11 @@ int receive_data(int socket, char *buffer, int len)
     LOG("After Decode:\n %s\n", buffer);
 #endif
     if (socket == remote_sock) {
-        LOGD("Receive data end [%s:%d]-->[%s:%d]:\n%s", client_ip, client_port, remote_host, remote_port, buffer);
+        if (log_level >= LOG_LEVEL_DEBUG_RECEIVE)
+            LOGD("Receive data end [%s:%d]-->[%s:%d]:\n%s", client_ip, client_port, remote_host, remote_port, buffer);
     } else {
-        LOGD("Receive data end [%s:%d]-->[%s:%d]:\n%s", remote_host, remote_port, client_ip, client_port, buffer);
+        if (log_level >= LOG_LEVEL_DEBUG_RECEIVE)
+            LOGD("Receive data end [%s:%d]-->[%s:%d]:\n%s", remote_host, remote_port, client_ip, client_port, buffer);
     }
     return n;
 }
@@ -1069,7 +1077,7 @@ void usage(void)
     printf("\t-r <remote_host:remote_port> : Specifyed remote host and port of reverse proxy. Only support http service now.\n");
     printf("\t-f <remote_host:remote_port> : Specifyed remote host and port of upstream proxy.\n");
     printf("\t-A <user:pass> : Specifyed basic authorization of upstream proxy.\n");
-    printf("\t-l <log_level> : Specifyed log level. error:1,info:2,debug:3\n");
+    printf("\t-l <log_level> : Specifyed log level. error:1,info:2,debug:3,debug_send:4,debug_receive:5\n");
     printf("\t-E : Encode data when forwarding data. Available in forwarding upstream proxy.\n");
     printf("\t-D : Decode data when receiving data. Available in forwarding upstream proxy.\n");
     printf("\t-s : Get remote host and port from first line strictly.\n");
