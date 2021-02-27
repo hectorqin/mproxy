@@ -23,6 +23,7 @@
 #define MAX_HEADER_LINE_SIZE 8192
 #define MAX_HEADER_VALUE_SIZE 8192
 #define MAX_AUTH_STRING_SIZE 128
+#define MAX_AUTH_STRING_PERR_SIZE 20
 
 // error
 #define SERVER_SOCKET_ERROR -1
@@ -250,6 +251,13 @@ char *base64_auth_string;
 // 上游代理鉴权字符串(包含Basic 字符串)
 char *upstream_base64_auth_string;
 
+// 代理鉴权文件
+char *base64_auth_file;
+// 代理鉴权字符串数组
+char base64_auth_string_array[MAX_AUTH_STRING_PERR_SIZE][MAX_AUTH_STRING_SIZE];
+// 代理鉴权账号数量
+int auth_account_num;
+
 enum
 {
     FLG_NONE = 0, /* 正常数据流不进行编解码 */
@@ -316,6 +324,12 @@ int add_header(char *name, char *value);
 
 // 设置远程服务器
 void set_remote_server(char *server);
+
+// 代理鉴权
+int check_auth(char *auth_string);
+
+// 解析代理鉴权
+void set_proxy_auth(char *authString);
 
 // 读取一行
 int readLine(int fd, void *buffer, int n)
@@ -618,7 +632,7 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
         set_remote_server(hoststring);
     }
 
-    if (base64_auth_string)
+    if (base64_auth_string || auth_account_num > 0)
     {
         if (!is_reverse_server || is_forward_upstream_proxy)
         {
@@ -642,7 +656,7 @@ void handle_client(int client_sock, struct sockaddr_in client_addr)
             /* currently only "basic" auth supported */
             int auth_failure = 1;
             if ((strncmp(authstring, "Basic ", 6) == 0 || strncmp(authstring, "basic ", 6) == 0) &&
-                strcmp(base64_auth_string, authstring + 6) == 0)
+                check_auth(authstring + 6) == 0)
             {
                 auth_failure = 0;
             }
@@ -1069,11 +1083,11 @@ void start_server(int is_daemon)
 }
 
 // Usage
-void usage(void)
+void usage()
 {
     printf("Usage:\n");
     printf("\t-p <port number> : Specifyed local listen port.\n");
-    printf("\t-a <user:pass> : Specifyed basic authorization of proxy.\n");
+    printf("\t-a <user:pass> : Specifyed basic authorization of proxy.\n\t   <auth_file> : Specifyed the proxy file, one line is one basic authorization string.\n");
     printf("\t-r <remote_host:remote_port> : Specifyed remote host and port of reverse proxy. Only support http service now.\n");
     printf("\t-f <remote_host:remote_port> : Specifyed remote host and port of upstream proxy.\n");
     printf("\t-A <user:pass> : Specifyed basic authorization of upstream proxy.\n");
@@ -1086,6 +1100,71 @@ void usage(void)
     printf("\t-t : Log very verborse.\n");
     printf("\t-h : Print usage.\n");
     exit(0);
+}
+
+int check_auth(char *auth_string)
+{
+    int is_wrong = 1;
+    // printf("strlen %lu %s\n", strlen(base64_auth_string), base64_auth_string);
+    if (base64_auth_string) {
+        return strcmp(base64_auth_string, auth_string);
+    }
+    for (int i = 0; i < auth_account_num; i++)
+    {
+        if (strcmp(base64_auth_string_array[i], auth_string) == 0) {
+            is_wrong = 0;
+            break;
+        }
+    }
+    return is_wrong;
+}
+
+// 设置代理鉴权
+void set_proxy_auth(char *optarg)
+{
+    char *sep = strchr(optarg, ':');
+    if (sep)
+    {
+        // 单行鉴权信息
+        if (MAX_AUTH_STRING_SIZE < (BASE64ENC_BYTES(strlen(optarg)) + 1))
+        {
+            printf("Authorization string is too long\n");
+            usage();
+        }
+        base64_auth_string = (char *)malloc(MAX_AUTH_STRING_SIZE);
+        base64enc(base64_auth_string, optarg, strlen(optarg));
+#ifdef DEBUG
+        LOG("\nBase64 of auth %s(size %lu) is: %s(size %lu)\n", optarg, strlen(optarg), base64_auth_string, strlen(base64_auth_string));
+#endif
+    } else {
+        base64_auth_file = (char *)malloc(MAX_AUTH_STRING_SIZE);
+        strncpy(base64_auth_file, optarg, strlen(optarg));
+        // 判断是否是文件
+        FILE *fp;
+        /* open */
+        if ((fp = fopen(optarg, "r")) == NULL)
+        {
+            printf("Authorization string is neither auth string nor file path\n");
+            usage();
+        }
+
+        int i=0;
+        while (!feof(fp))
+        {
+            char *line = (char *)malloc(MAX_AUTH_STRING_SIZE);
+            char * find;
+            fgets(line, MAX_AUTH_STRING_SIZE, fp);  //读取一行
+            find = strchr(line, '\n');          //查找换行符
+            if(find){
+                // 去掉换行符
+                *find = '\0';
+            }
+            base64enc(base64_auth_string_array[i], line, strlen(line));
+            i++;
+        }
+        fclose(fp);
+        auth_account_num = i;
+    }
 }
 
 // main
@@ -1106,16 +1185,7 @@ int main(int argc, char *argv[])
             local_port = atoi(optarg);
             break;
         case 'a':
-            if (MAX_AUTH_STRING_SIZE < (BASE64ENC_BYTES(strlen(optarg)) + 1))
-            {
-                printf("Authorization string is too long\n");
-                usage();
-            }
-            base64_auth_string = (char *)malloc(MAX_AUTH_STRING_SIZE);
-            base64enc(base64_auth_string, optarg, strlen(optarg));
-#ifdef DEBUG
-            LOG("\nBase64 of auth %s(size %lu) is: %s(size %lu)\n", optarg, strlen(optarg), base64_auth_string, strlen(base64_auth_string));
-#endif
+            set_proxy_auth(optarg);
             break;
         case 'r':
         case 'f':
@@ -1176,6 +1246,13 @@ int main(int argc, char *argv[])
     {
         printf("Reverse proxy server is not support encryption\n");
         usage();
+    }
+
+    if (log_level == LOG_LEVEL_DEBUG) {
+        for (int i = 0; i < auth_account_num; i++)
+        {
+            printf("Proxy auth account %d %s\n", i, base64_auth_string_array[i]);
+        }
     }
 
     LOG("Proxy server start on port : %d\n", local_port);
